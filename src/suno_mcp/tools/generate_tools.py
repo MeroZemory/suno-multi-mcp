@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(stream=sys.stderr)
 
 CREATE_URL = "https://suno.com/create"
+DEFAULT_WORKSPACE = "Just Game MCP"
 
 # Playwright evaluate() only accepts (js, single_arg).
 # Pass {"keywords": [...], "text": "..."} as the single arg.
@@ -121,6 +122,34 @@ class GenerateTools:
             debug = await page.evaluate(_JS_DEBUG)
             logger.info("Create page state: %s", debug)
 
+            # Select workspace "Just Game MCP" before generating
+            ws_result = await page.evaluate("""
+(wsName) => {
+    // Click Workspaces button to open dropdown
+    const wsBtn = [...document.querySelectorAll('button')]
+        .find(b => b.innerText.trim() === 'Workspaces' && b.offsetParent);
+    if (!wsBtn) return 'no_workspaces_btn';
+    wsBtn.click();
+    return 'opened';
+}
+""", DEFAULT_WORKSPACE)
+            if ws_result == 'opened':
+                await asyncio.sleep(1)
+                # Find and click the workspace by name
+                ws_selected = await page.evaluate("""
+(wsName) => {
+    // Look for workspace name in any dropdown menu item / li / div
+    const allText = [...document.querySelectorAll('li, [role="option"], [role="menuitem"], button')]
+        .filter(el => el.offsetParent !== null);
+    for (const el of allText) {
+        if (el.innerText.trim() === wsName) { el.click(); return 'selected:' + wsName; }
+    }
+    return 'not_found';
+}
+""", DEFAULT_WORKSPACE)
+                logger.info("Workspace selection: %s", ws_selected)
+                await asyncio.sleep(0.5)
+
             # Enable Custom mode (unlocks Lyrics + Style of Music fields)
             custom_clicked = await page.evaluate(
                 _JS_CLICK_BTN,
@@ -177,6 +206,7 @@ class GenerateTools:
 
             return (
                 f"🎵 Track generation initiated!\n"
+                f"Workspace: {DEFAULT_WORKSPACE}\n"
                 f"Prompt: \"{prompt[:100]}{'...' if len(prompt) > 100 else ''}\"\n"
                 f"Style: {style}\n"
                 f"{'Lyrics: ' + str(len(lyrics)) + ' chars' if lyrics else 'No custom lyrics'}\n"
