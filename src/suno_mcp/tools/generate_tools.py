@@ -14,20 +14,23 @@ logging.basicConfig(stream=sys.stderr)
 
 CREATE_URL = "https://suno.com/create"
 
-# JS helper: fill a textarea/input by placeholder keyword match or first visible
+# Playwright evaluate() only accepts (js, single_arg).
+# Pass {"keywords": [...], "text": "..."} as the single arg.
 _JS_FILL = """
-(selector_keywords, text) => {
+({keywords, text}) => {
     const all = [...document.querySelectorAll('textarea, input[type="text"]')];
-    // Try keyword match first
     for (const el of all) {
         const ph = (el.placeholder || el.getAttribute('aria-label') || '').toLowerCase();
-        if (selector_keywords.some(k => ph.includes(k)) && el.offsetParent !== null) {
+        if (keywords.some(k => ph.includes(k)) && el.offsetParent !== null) {
             el.focus();
-            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                window.HTMLTextAreaElement.prototype, 'value') ||
-                Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
-            if (nativeInputValueSetter && nativeInputValueSetter.set) {
-                nativeInputValueSetter.set.call(el, text);
+            const desc = Object.getOwnPropertyDescriptor(
+                el.tagName === 'TEXTAREA'
+                    ? window.HTMLTextAreaElement.prototype
+                    : window.HTMLInputElement.prototype,
+                'value'
+            );
+            if (desc && desc.set) {
+                desc.set.call(el, text);
             } else {
                 el.value = text;
             }
@@ -81,10 +84,13 @@ _JS_DEBUG = """
     }));
     const inputs = [...document.querySelectorAll('input')].map(i => ({
         ph: i.placeholder, type: i.type, name: i.name, visible: i.offsetParent !== null
-    }));
-    const buttons = [...document.querySelectorAll('button')].filter(b => b.offsetParent)
-        .map(b => b.textContent.trim()).filter(t => t.length < 40);
-    return {textareas, inputs: inputs.slice(0, 10), buttons: buttons.slice(0, 20), url: location.href};
+    })).slice(0, 10);
+    const buttons = [...document.querySelectorAll('button')]
+        .filter(b => b.offsetParent)
+        .map(b => b.textContent.trim())
+        .filter(t => t.length < 40)
+        .slice(0, 20);
+    return {textareas, inputs, buttons, url: location.href};
 }
 """
 
@@ -115,7 +121,7 @@ class GenerateTools:
             debug = await page.evaluate(_JS_DEBUG)
             logger.info("Create page state: %s", debug)
 
-            # Enable Custom mode (to unlock Lyrics + Style of Music fields)
+            # Enable Custom mode (unlocks Lyrics + Style of Music fields)
             custom_clicked = await page.evaluate(
                 _JS_CLICK_BTN,
                 ["custom", "커스텀", "custom mode"],
@@ -128,8 +134,7 @@ class GenerateTools:
             if lyrics:
                 lyric_result = await page.evaluate(
                     _JS_FILL,
-                    ["lyric", "가사", "enter your lyrics", "write lyrics"],
-                    lyrics,
+                    {"keywords": ["lyric", "가사", "enter your lyrics", "write lyrics"], "text": lyrics},
                 )
                 logger.info("Lyrics fill result: %s", lyric_result)
 
@@ -137,20 +142,21 @@ class GenerateTools:
             if style:
                 style_result = await page.evaluate(
                     _JS_FILL,
-                    ["style", "genre", "music style", "style of music"],
-                    style,
+                    {"keywords": ["style", "genre", "music style", "style of music"], "text": style},
                 )
                 logger.info("Style fill result: %s", style_result)
 
-            # Fill main prompt / Song Description field
+            # Fill main prompt / Song Description
             prompt_result = await page.evaluate(
                 _JS_FILL,
-                ["describe", "song description", "song desc", "prompt", "describe your"],
-                prompt,
+                {"keywords": ["describe", "song description", "song desc", "prompt", "describe your"], "text": prompt},
             )
             if not prompt_result:
-                # Try once more with the fallback (fills first visible textarea)
-                prompt_result = await page.evaluate(_JS_FILL, [""], prompt)
+                # Fallback: fill first visible textarea
+                prompt_result = await page.evaluate(
+                    _JS_FILL,
+                    {"keywords": [], "text": prompt},
+                )
             if not prompt_result:
                 debug2 = await page.evaluate(_JS_DEBUG)
                 raise SunoError(
@@ -173,9 +179,9 @@ class GenerateTools:
                 f"🎵 Track generation initiated!\n"
                 f"Prompt: \"{prompt[:100]}{'...' if len(prompt) > 100 else ''}\"\n"
                 f"Style: {style}\n"
-                f"{'Lyrics provided: ' + str(len(lyrics)) + ' chars' if lyrics else 'No custom lyrics'}\n"
+                f"{'Lyrics: ' + str(len(lyrics)) + ' chars' if lyrics else 'No custom lyrics'}\n"
                 f"Custom mode: {'activated' if custom_clicked else 'not found (simple mode)'}\n"
-                f"Generation in progress. Use suno_library_list to check when complete."
+                f"Use suno_library_list to check when complete."
             )
 
         except SunoError:
