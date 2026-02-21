@@ -41,27 +41,43 @@ class AuthTools:
                 'a:has-text("Sign In")',
                 'a:has-text("Sign in")',
                 '[data-testid="sign-in-button"]',
+                'a[href*="sign-in"]',
             ]
-            clicked = await try_click(page, sign_in_selectors, timeout=5_000)
+            clicked = await try_click(page, sign_in_selectors, timeout=8_000)
             if not clicked:
                 raise AuthError("Sign In button not found", "SIGNIN_BUTTON_NOT_FOUND")
 
-            # Wait for Google button to appear (poll up to 8 seconds)
-            google_sel = await find_visible(
-                page,
-                [
-                    'button:has-text("Continue with Google")',
-                    'button:has-text("Google")',
-                    '[data-provider="google"]',
-                    'a:has-text("Continue with Google")',
-                ],
-                timeout=8_000,
-            )
-            if not google_sel:
+            # Wait for Clerk auth dialog/page to render
+            await asyncio.sleep(2)
+
+            # Poll up to 12 seconds for any Google button (JS-based, most reliable)
+            google_clicked = False
+            for _attempt in range(12):
+                google_clicked = await page.evaluate("""() => {
+                    const els = [
+                        ...document.querySelectorAll('button'),
+                        ...document.querySelectorAll('a'),
+                    ];
+                    for (const el of els) {
+                        const txt = (el.textContent || '').toLowerCase();
+                        const prov = (el.getAttribute('data-provider') || '').toLowerCase();
+                        const key = (el.getAttribute('data-localization-key') || '').toLowerCase();
+                        if (txt.includes('google') || prov.includes('google') || key.includes('google')) {
+                            el.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }""")
+                if google_clicked:
+                    break
+                await asyncio.sleep(1)
+
+            if not google_clicked:
                 raise AuthError("Google login button not found", "GOOGLE_BUTTON_NOT_FOUND")
 
-            # Click Google button
-            await try_click(page, [google_sel], timeout=5_000)
+            # Small pause after click
+            await asyncio.sleep(1)
 
             # Wait for redirect to Google accounts
             try:
