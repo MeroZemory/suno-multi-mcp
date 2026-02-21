@@ -20,9 +20,6 @@ from ..session.store import SessionStore
 logger = logging.getLogger(__name__)
 logging.basicConfig(stream=sys.stderr)
 
-# Persistent Chrome profile directory for suno-mcp
-CHROME_PROFILE_DIR = Path.home() / ".suno-mcp" / "chrome-profile"
-
 
 class BrowserManager:
     """Manages Playwright browser with stealth mode and session persistence."""
@@ -40,8 +37,11 @@ class BrowserManager:
             if not self._playwright:
                 self._playwright = await async_playwright().start()
 
+            if not self._browser or not self._browser.is_connected():
+                self._browser = await self._launch_browser(headless)
+
             if not self._context:
-                self._context = await self._launch_persistent_context(headless)
+                self._context = await self._create_context()
 
             if not self._page:
                 pages = self._context.pages
@@ -58,24 +58,29 @@ class BrowserManager:
             }
         except Exception as e:
             logger.error("Browser initialization failed: %s", e)
+            # Reset stale state so next call retries cleanly
+            self._page = None
+            self._context = None
+            self._browser = None
             raise BrowserError(f"Browser initialization failed: {e}", "BROWSER_INIT_ERROR")
 
-    async def _launch_persistent_context(self, headless: bool) -> BrowserContext:
-        """Launch a persistent Chrome context with stealth and optional session restore."""
+    async def _launch_browser(self, headless: bool) -> Browser:
+        """Launch Playwright's bundled Chromium browser."""
         assert self._playwright is not None
-        CHROME_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-
-        kwargs: dict[str, Any] = {
-            "channel": "chrome",
-            "headless": headless,
-            "args": [
+        return await self._playwright.chromium.launch(
+            headless=headless,
+            args=[
                 "--no-sandbox",
-                "--disable-setuid-sandbox",
                 "--disable-blink-features=AutomationControlled",
                 "--disable-dev-shm-usage",
-                "--disable-extensions-except=",
-                "--disable-plugins-discovery",
             ],
+        )
+
+    async def _create_context(self) -> BrowserContext:
+        """Create a browser context, restoring saved session if available."""
+        assert self._browser is not None
+
+        ctx_kwargs: dict[str, Any] = {
             "viewport": {"width": 1280, "height": 900},
             "user_agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -83,21 +88,15 @@ class BrowserManager:
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
             "accept_downloads": True,
-            "ignore_default_args": ["--enable-automation"],
         }
 
-        # Restore saved session cookies if available
         saved = self.session_store.load()
         if saved:
-            kwargs["storage_state"] = saved
+            ctx_kwargs["storage_state"] = saved
             logger.info("Restored browser session from storage")
 
-        context = await self._playwright.chromium.launch_persistent_context(
-            str(CHROME_PROFILE_DIR),
-            **kwargs,
-        )
+        context = await self._browser.new_context(**ctx_kwargs)
 
-        # Remove automation markers
         await context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             window.chrome = { runtime: {} };
@@ -105,9 +104,7 @@ class BrowserManager:
             Object.defineProperty(navigator, 'languages', {get: () => ['ko-KR', 'ko', 'en-US', 'en']});
         """)
 
-        # Apply stealth to ALL new pages (including Google OAuth popups)
         context.on("page", self._on_new_page)
-
         return context
 
     def _on_new_page(self, page: Page) -> None:
@@ -140,7 +137,9 @@ class BrowserManager:
             if self._context:
                 await self._context.close()
                 self._context = None
-            self._browser = None
+            if self._browser:
+                await self._browser.close()
+                self._browser = None
             if self._playwright:
                 await self._playwright.stop()
                 self._playwright = None
