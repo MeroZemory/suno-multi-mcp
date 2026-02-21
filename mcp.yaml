@@ -1,101 +1,29 @@
-# MCP Server Configuration for Suno AI Automation
-# This file configures the Suno MCP server for use with MCP-compatible clients
-
 server:
   name: suno-mcp
-  version: "1.0.0"
-  description: "MCP Server for automated Suno AI music generation"
-
-  # Command to run the server
-  command: python
-  args:
-    - "-m"
-    - "suno_mcp.server"
-
-  # Environment variables
+  version: 2.0.0
+  command: python -m suno_mcp.server
   env:
-    PYTHONPATH: "src"
+    PYTHONPATH: src
     PYTHONUNBUFFERED: "1"
 
-  # Capabilities this server provides
-  capabilities:
-    tools: {}
-
-# Server metadata
-metadata:
-  author: "Sandra Schipal"
-  license: "MIT"
-  repository: "https://github.com/sandra/suno-mcp"
-  documentation: "https://suno-mcp.readthedocs.io/"
-
-# Tool categories
 tools:
-  basic:
-    description: "Basic Suno AI music generation tools"
-    tools:
-      - suno_open_browser
-      - suno_login
-      - suno_generate_track
-      - suno_download_track
-      - suno_get_status
-      - suno_close_browser
-
-  studio:
-    description: "Suno Studio DAW automation tools"
-    tools:
-      - studio_open
-      - studio_close
-      - studio_create_project
-      - studio_generate_stem
-      - studio_open_project
-      - studio_save_project
-      - studio_generate_multiple_stems
-      - studio_wait_generation
-      - studio_arrange_track
-      - studio_set_bpm
-      - studio_create_sections
-      - studio_adjust_volume
-      - studio_add_effect
-      - studio_export_project
-      - studio_export_section
-      - studio_get_status
-      - studio_get_generation_status
-      - studio_list_projects
-
-# Configuration options
-config:
-  browser:
-    headless: true
-    default_viewport:
-      width: 1920
-      height: 1080
-    user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-  timeouts:
-    navigation: 30000
-    element: 10000
-    page_load: 60000
-
-  paths:
-    downloads: "downloads/"
-    temp: "temp/"
-    exports: "exports/"
-
-  suno:
-    base_url: "https://app.suno.ai"
-    studio_url: "https://studio.suno.ai"
-    api_timeout: 120000
-
-# Logging configuration
-logging:
-  level: "INFO"
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file: "logs/suno-mcp.log"
-
-# Security settings
-security:
-  max_concurrent_sessions: 3
-  session_timeout: 3600000  # 1 hour
-  rate_limit:
-    requests_per_minute: 60
-    burst_limit: 10
+  - name: suno_open_browser
+    description: Open Chrome browser with stealth mode for Suno AI
+  - name: suno_login
+    description: Login to Suno AI via Google OAuth with session persistence
+  - name: suno_generate_track
+    description: Generate a new music track using Suno AI
+  - name: suno_download_track
+    description: Download a generated track from Suno AI library
+  - name: suno_get_status
+    description: Get current session and browser status
+  - name: suno_close_browser
+    description: Close the browser session
+  - name: suno_library_list
+    description: List tracks from your Suno AI library
+  - name: suno_track_info
+    description: Get detailed information about a specific track
+  - name: suno_track_extend
+    description: Extend an existing track with additional content
+  - name: suno_track_remix
+    description: Remix an existing track with a new prompt and style
