@@ -1,7 +1,9 @@
 """Browser lifecycle management with stealth mode and session persistence."""
 
+import asyncio
 import logging
 import sys
+from pathlib import Path
 from typing import Any, Optional
 
 from playwright.async_api import (
@@ -17,6 +19,9 @@ from ..session.store import SessionStore
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(stream=sys.stderr)
+
+# Persistent Chrome profile directory for suno-mcp
+CHROME_PROFILE_DIR = Path.home() / ".suno-mcp" / "chrome-profile"
 
 
 class BrowserManager:
@@ -35,23 +40,12 @@ class BrowserManager:
             if not self._playwright:
                 self._playwright = await async_playwright().start()
 
-            if not self._browser:
-                self._browser = await self._playwright.chromium.launch(
-                    channel="chrome",
-                    headless=headless,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-blink-features=AutomationControlled",
-                        "--disable-dev-shm-usage",
-                    ],
-                )
-
             if not self._context:
-                self._context = await self._create_context()
+                self._context = await self._launch_persistent_context(headless)
 
             if not self._page:
-                self._page = await self._context.new_page()
+                pages = self._context.pages
+                self._page = pages[0] if pages else await self._context.new_page()
                 self._page.set_default_timeout(30_000)
                 self._page.set_default_navigation_timeout(30_000)
                 await self._apply_stealth(self._page)
@@ -66,38 +60,70 @@ class BrowserManager:
             logger.error("Browser initialization failed: %s", e)
             raise BrowserError(f"Browser initialization failed: {e}", "BROWSER_INIT_ERROR")
 
-    async def _create_context(self) -> BrowserContext:
-        """Create browser context, restoring session if available."""
-        assert self._browser is not None
+    async def _launch_persistent_context(self, headless: bool) -> BrowserContext:
+        """Launch a persistent Chrome context with stealth and optional session restore."""
+        assert self._playwright is not None
+        CHROME_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+
         kwargs: dict[str, Any] = {
-            "viewport": {"width": 1920, "height": 1080},
+            "channel": "chrome",
+            "headless": headless,
+            "args": [
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--disable-extensions-except=",
+                "--disable-plugins-discovery",
+            ],
+            "viewport": {"width": 1280, "height": 900},
             "user_agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
             "accept_downloads": True,
+            "ignore_default_args": ["--enable-automation"],
         }
+
+        # Restore saved session cookies if available
         saved = self.session_store.load()
         if saved:
             kwargs["storage_state"] = saved
             logger.info("Restored browser session from storage")
 
-        context = await self._browser.new_context(**kwargs)
-        # Prevent automation detection via init script
-        await context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        context = await self._playwright.chromium.launch_persistent_context(
+            str(CHROME_PROFILE_DIR),
+            **kwargs,
         )
+
+        # Remove automation markers
+        await context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            window.chrome = { runtime: {} };
+            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+            Object.defineProperty(navigator, 'languages', {get: () => ['ko-KR', 'ko', 'en-US', 'en']});
+        """)
+
+        # Apply stealth to ALL new pages (including Google OAuth popups)
+        context.on("page", self._on_new_page)
+
         return context
+
+    def _on_new_page(self, page: Page) -> None:
+        """Called when any new page/popup opens in the context."""
+        asyncio.ensure_future(self._apply_stealth(page))
+        logger.info("Stealth applied to new page: %s", page.url)
 
     async def _apply_stealth(self, page: Page) -> None:
         """Apply playwright-stealth patches to evade bot detection."""
         try:
             from playwright_stealth import Stealth  # type: ignore[import]
             await Stealth().apply_stealth_async(page)
-            logger.info("Stealth mode applied")
         except ImportError:
             logger.warning("playwright-stealth not installed; skipping stealth mode")
+        except Exception as e:
+            logger.warning("Stealth apply failed: %s", e)
 
     async def save_session(self) -> None:
         """Save current browser session state to disk."""
@@ -114,9 +140,7 @@ class BrowserManager:
             if self._context:
                 await self._context.close()
                 self._context = None
-            if self._browser:
-                await self._browser.close()
-                self._browser = None
+            self._browser = None
             if self._playwright:
                 await self._playwright.stop()
                 self._playwright = None
@@ -128,7 +152,7 @@ class BrowserManager:
     async def get_status(self) -> dict[str, Any]:
         """Return current browser/session status dict."""
         status: dict[str, Any] = {
-            "browser_open": self._browser is not None,
+            "browser_open": self._context is not None,
             "context_ready": self._context is not None,
             "page_ready": self._page is not None,
             "current_url": None,

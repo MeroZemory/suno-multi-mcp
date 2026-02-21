@@ -3,6 +3,9 @@
 import asyncio
 import logging
 import sys
+from typing import Optional
+
+from playwright.async_api import Page
 
 from ..browser.manager import BrowserManager
 from ..browser.navigator import find_visible, navigate_to, try_click, try_fill
@@ -25,6 +28,7 @@ class AuthTools:
         try:
             components = await self.manager.ensure_browser(headless=False)
             page = components["page"]
+            context = components["context"]
 
             # Check if already logged in
             if await self._is_logged_in(page):
@@ -47,10 +51,19 @@ class AuthTools:
             if not clicked:
                 raise AuthError("Sign In button not found", "SIGNIN_BUTTON_NOT_FOUND")
 
-            # Wait for Clerk auth dialog/page to render
+            # Wait for Clerk dialog to render
             await asyncio.sleep(2)
 
-            # Poll up to 12 seconds for any Google button (JS-based, most reliable)
+            # Set up popup/new-page listener BEFORE clicking Google button
+            popup_future: asyncio.Future[Page] = asyncio.get_event_loop().create_future()
+
+            def _on_page(new_page: Page) -> None:
+                if not popup_future.done():
+                    popup_future.set_result(new_page)
+
+            context.on("page", _on_page)
+
+            # Click Google button via JS (most reliable across Clerk variants)
             google_clicked = False
             for _attempt in range(12):
                 google_clicked = await page.evaluate("""() => {
@@ -74,22 +87,17 @@ class AuthTools:
                 await asyncio.sleep(1)
 
             if not google_clicked:
+                context.remove_listener("page", _on_page)
                 raise AuthError("Google login button not found", "GOOGLE_BUTTON_NOT_FOUND")
 
-            # Small pause after click
-            await asyncio.sleep(1)
+            # Determine whether Google OAuth opened in a popup or navigated the main page
+            google_page = await self._resolve_google_page(page, popup_future)
+            context.remove_listener("page", _on_page)
 
-            # Wait for redirect to Google accounts
-            try:
-                await page.wait_for_url("**/accounts.google.com/**", timeout=10_000)
-            except Exception:
-                # May have opened a new tab or popup — handle both
-                pass
+            # Fill Google credentials
+            await self._handle_google_oauth(google_page, email, password)
 
-            # Handle Google OAuth form
-            await self._handle_google_oauth(page, email, password)
-
-            # Wait for return to suno.com
+            # Wait for suno.com to come back (main page)
             try:
                 await page.wait_for_url("**/suno.com/**", timeout=30_000)
             except Exception:
@@ -101,10 +109,12 @@ class AuthTools:
                     "LOGIN_FAILED",
                 )
 
-            # Save session for future use
             await self.manager.save_session()
-            final_url = page.url
-            return f"✅ Login successful!\nCurrent URL: {final_url}\nSession saved for future use."
+            return (
+                f"✅ Login successful!\n"
+                f"Current URL: {page.url}\n"
+                f"Session saved for future use."
+            )
 
         except AuthError:
             raise
@@ -112,11 +122,35 @@ class AuthTools:
             logger.error("Login failed: %s", e)
             raise AuthError(f"Login failed: {e}", "LOGIN_ERROR")
 
-    async def _handle_google_oauth(self, page: object, email: str, password: str) -> None:
-        """Fill Google OAuth email and password forms."""
-        from playwright.async_api import Page
-        assert isinstance(page, Page)
+    async def _resolve_google_page(
+        self, main_page: Page, popup_future: "asyncio.Future[Page]"
+    ) -> Page:
+        """Wait and determine whether Google OAuth is in a popup or main page."""
+        await asyncio.sleep(1)
 
+        # Try to get a popup that opened
+        try:
+            popup = await asyncio.wait_for(asyncio.shield(popup_future), timeout=4.0)
+            logger.info("Google OAuth opened in popup: %s", popup.url)
+            await asyncio.sleep(1)  # Let the popup page load
+            return popup
+        except asyncio.TimeoutError:
+            pass  # No popup — check if main page navigated to Google
+
+        # Check if main page navigated to accounts.google.com
+        try:
+            await main_page.wait_for_url("**/accounts.google.com/**", timeout=5_000)
+            logger.info("Google OAuth on main page: %s", main_page.url)
+            return main_page
+        except Exception:
+            pass
+
+        # Default: try main page anyway
+        logger.warning("Could not confirm Google OAuth location, using main page")
+        return main_page
+
+    async def _handle_google_oauth(self, page: Page, email: str, password: str) -> None:
+        """Fill Google OAuth email and password forms on the given page."""
         await asyncio.sleep(1)
 
         # Email step
@@ -126,11 +160,10 @@ class AuthTools:
             '#identifierInput',
             '#Email',
         ]
-        filled = await try_fill(page, email_selectors, email, timeout=5_000)
+        filled = await try_fill(page, email_selectors, email, timeout=8_000)
         if not filled:
             raise AuthError("Google email field not found", "GOOGLE_EMAIL_NOT_FOUND")
 
-        # Click Next after email
         await try_click(
             page,
             ['#identifierNext', 'button:has-text("Next")', 'input[value="Next"]'],
@@ -145,26 +178,22 @@ class AuthTools:
             '#passwordInput',
             '#Passwd',
         ]
-        filled = await try_fill(page, password_selectors, password, timeout=8_000)
+        filled = await try_fill(page, password_selectors, password, timeout=10_000)
         if not filled:
             raise AuthError("Google password field not found", "GOOGLE_PASSWORD_NOT_FOUND")
 
-        # Click Next after password
         await try_click(
             page,
             ['#passwordNext', 'button:has-text("Next")', 'input[value="Next"]'],
             timeout=5_000,
         )
 
-    async def _is_logged_in(self, page: object) -> bool:
+    async def _is_logged_in(self, page: Page) -> bool:
         """Check if the user is currently logged in to Suno."""
-        from playwright.async_api import Page
-        assert isinstance(page, Page)
         try:
             url = page.url or ""
             if "suno.com" not in url:
                 return False
-            # Look for user avatar or account menu (visible when logged in)
             logged_in_sel = await find_visible(
                 page,
                 [
