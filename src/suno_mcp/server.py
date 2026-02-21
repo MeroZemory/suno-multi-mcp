@@ -83,16 +83,29 @@ async def suno_generate_track(
     style: str = "synthwave",
     lyrics: Optional[str] = None,
     duration: str = "auto",
+    title: Optional[str] = None,
 ) -> str:
     """Generate a new music track using Suno AI.
 
+    RULES (always follow):
+    1. Always specify `title` — makes the generated track identifiable in the library.
+    2. Always specify `duration` appropriate to the use case:
+       - "short" (~30s): stings, transitions, short loops
+       - "medium" (~60-90s): preparation screens, menus, short loops
+       - "long" (2-3min): battle themes, title screen, boss fights, cutscenes
+       - "auto": only when duration doesn't matter
+    3. NEVER call this tool again before confirming the previous two tracks
+       appeared in suno_library_list — calling too fast triggers CAPTCHA.
+    4. All tracks go to the "Just Game MCP" workspace automatically.
+
     Args:
-        prompt: Description of the desired music
-        style: Musical style (e.g. "synthwave", "dark orchestral", "pop")
-        lyrics: Optional lyrics to incorporate
-        duration: Track length ("auto", "short", "medium", "long")
+        prompt: Song Description — what the music should convey, mood, context
+        style: Style of Music field — genre tags (e.g. "dark ambient, taiko drums, cinematic")
+        lyrics: Custom lyrics (leave None for instrumental)
+        duration: Track length hint — "short" / "medium" / "long" / "auto"
+        title: Desired track title (shown in library — always specify this)
     """
-    return await _generate.generate_track(prompt, style, lyrics, duration)
+    return await _generate.generate_track(prompt, style, lyrics, duration, title)
 
 
 # ── Download tools ─────────────────────────────────────────────────────────────
